@@ -56,12 +56,15 @@ impl StatusLineGenerator {
             return String::new();
         }
 
+        // 获取换行位置配置
+        let line_break_after = self.config.style.line_break_after;
+
         // Handle Powerline arrow separators with color transition
         if self.config.style.separator == "\u{e0b0}" {
-            self.join_with_powerline_arrows(&output, &enabled_segments)
+            self.join_with_powerline_arrows(&output, &enabled_segments, line_break_after)
         } else {
             // For all other separators, use white color and simple join
-            self.join_with_white_separators(&output)
+            self.join_with_white_separators(&output, line_break_after)
         }
     }
 
@@ -358,21 +361,37 @@ impl StatusLineGenerator {
     }
 
     /// Join segments with white separators (non-Powerline)
-    fn join_with_white_separators(&self, rendered_segments: &[String]) -> String {
+    /// line_break_after: 在第 N 个 segment 后插入换行（None 则不换行）
+    fn join_with_white_separators(
+        &self,
+        rendered_segments: &[String],
+        line_break_after: Option<usize>,
+    ) -> String {
         if rendered_segments.is_empty() {
             return String::new();
         }
 
         // Use white color for separator
         let white_separator = format!("\x1b[37m{}\x1b[0m", self.config.style.separator);
-        rendered_segments.join(&white_separator)
+
+        match line_break_after {
+            Some(n) if n > 0 && n < rendered_segments.len() => {
+                // 前 N 段用分隔符拼接为第一行，剩余段为第二行
+                let line1 = rendered_segments[..n].join(&white_separator);
+                let line2 = rendered_segments[n..].join(&white_separator);
+                format!("{}\n{}", line1, line2)
+            }
+            _ => rendered_segments.join(&white_separator),
+        }
     }
 
     /// Join segments with Powerline arrow separators with proper color transitions
+    /// line_break_after: 在第 N 个 segment 后插入换行（None 则不换行）
     fn join_with_powerline_arrows(
         &self,
         rendered_segments: &[String],
         segment_configs: &[(SegmentConfig, SegmentData)],
+        line_break_after: Option<usize>,
     ) -> String {
         if rendered_segments.is_empty() {
             return String::new();
@@ -385,6 +404,15 @@ impl StatusLineGenerator {
         let mut result = rendered_segments[0].clone();
 
         for (i, _) in rendered_segments.iter().enumerate().skip(1) {
+            // 在指定位置插入换行（替代箭头分隔符）
+            if let Some(n) = line_break_after {
+                if i == n {
+                    result.push_str("\x1b[0m\n");
+                    result.push_str(&rendered_segments[i]);
+                    continue;
+                }
+            }
+
             let prev_bg = segment_configs
                 .get(i - 1)
                 .and_then(|(config, _)| config.colors.background.as_ref());

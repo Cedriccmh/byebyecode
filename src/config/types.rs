@@ -15,6 +15,9 @@ pub struct Config {
 pub struct StyleConfig {
     pub mode: StyleMode,
     pub separator: String,
+    /// 在第 N 个 segment 后换行（如 line_break_after = 5 表示前 5 段一行，剩余另起一行）
+    #[serde(default)]
+    pub line_break_after: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

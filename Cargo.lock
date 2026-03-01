@@ -155,7 +155,7 @@ checksum = "5dd9dc738b7a8311c7ade152424974d8115f2cdad61e8dab8dac9f2362298510"
 
 [[package]]
 name = "byebyecode"
-version = "1.1.27"
+version = "1.1.28"
 dependencies = [
  "ansi-to-tui",
  "ansi_term",
