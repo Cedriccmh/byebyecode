@@ -1,0 +1,478 @@
+diff --git a/src/config/models.rs b/src/config/models.rs
+index cbfe38a..d9fb60f 100644
+--- a/src/config/models.rs
++++ b/src/config/models.rs
+@@ -131,12 +131,28 @@ impl Default for ModelConfig {
+     fn default() -> Self {
+         Self {
+             model_entries: vec![
+-                // 1M context models (put first for priority matching)
++                // 1M context models - specific patterns first (first-match-wins)
+                 ModelEntry {
+-                    pattern: "[1m]".to_string(),
++                    pattern: "opus-4-6[1m]".to_string(),
++                    display_name: "Opus 4.6 1M".to_string(),
++                    context_limit: 1_000_000,
++                },
++                ModelEntry {
++                    pattern: "sonnet-4-6[1m]".to_string(),
++                    display_name: "Sonnet 4.6 1M".to_string(),
++                    context_limit: 1_000_000,
++                },
++                ModelEntry {
++                    pattern: "sonnet-4-5[1m]".to_string(),
+                     display_name: "Sonnet 4.5 1M".to_string(),
+                     context_limit: 1_000_000,
+                 },
++                // Generic 1M fallback for unknown models
++                ModelEntry {
++                    pattern: "[1m]".to_string(),
++                    display_name: "1M Context".to_string(),
++                    context_limit: 1_000_000,
++                },
+                 // ModelEntry {
+                 //     pattern: "claude-sonnet-4-5".to_string(),
+                 //     display_name: "Sonnet 4.5".to_string(),
+diff --git a/src/core/segments/context_window.rs b/src/core/segments/context_window.rs
+index d0c7eec..a0cbabd 100644
+--- a/src/core/segments/context_window.rs
++++ b/src/core/segments/context_window.rs
+@@ -5,12 +5,63 @@ use std::fs;
+ use std::io::{BufRead, BufReader};
+ use std::path::{Path, PathBuf};
+ 
+-#[derive(Default)]
+-pub struct ContextWindowSegment;
++/// ANSI 重置代码
++const RESET: &str = "\x1b[0m";
++
++pub struct ContextWindowSegment {
++    show_tokens: bool,
++    color_low: String,
++    color_mid: String,
++    color_high: String,
++}
++
++impl Default for ContextWindowSegment {
++    fn default() -> Self {
++        Self::new()
++    }
++}
+ 
+ impl ContextWindowSegment {
+     pub fn new() -> Self {
+-        Self
++        Self {
++            show_tokens: true,
++            color_low: "\x1b[38;5;114m".to_string(),
++            color_mid: "\x1b[38;5;179m".to_string(),
++            color_high: "\x1b[38;5;167m".to_string(),
++        }
++    }
++
++    pub fn with_show_tokens(mut self, show: bool) -> Self {
++        self.show_tokens = show;
++        self
++    }
++
++    pub fn with_colors(
++        mut self,
++        low: Option<u8>,
++        mid: Option<u8>,
++        high: Option<u8>,
++    ) -> Self {
++        if let Some(n) = low {
++            self.color_low = format!("\x1b[38;5;{}m", n);
++        }
++        if let Some(n) = mid {
++            self.color_mid = format!("\x1b[38;5;{}m", n);
++        }
++        if let Some(n) = high {
++            self.color_high = format!("\x1b[38;5;{}m", n);
++        }
++        self
++    }
++
++    fn get_status_color(&self, percentage: f64) -> &str {
++        if percentage <= 50.0 {
++            &self.color_low
++        } else if percentage <= 80.0 {
++            &self.color_mid
++        } else {
++            &self.color_high
++        }
+     }
+ 
+     /// Get context limit for the specified model
+@@ -27,7 +78,7 @@ impl Segment for ContextWindowSegment {
+ 
+         let context_used_token_opt = parse_transcript_usage(&input.transcript_path);
+ 
+-        let (percentage_display, tokens_display) = match context_used_token_opt {
++        let (percentage_display, tokens_display, progress_bar) = match context_used_token_opt {
+             Some(context_used_token) => {
+                 let context_used_rate = (context_used_token as f64 / context_limit as f64) * 100.0;
+ 
+@@ -48,18 +99,32 @@ impl Segment for ContextWindowSegment {
+                     context_used_token.to_string()
+                 };
+ 
+-                (percentage, tokens)
++                let bar_length = 10;
++                let filled =
++                    ((context_used_rate / 100.0) * bar_length as f64).round() as usize;
++                let empty = bar_length - filled;
++                let status_color = self.get_status_color(context_used_rate);
++                let progress_bar = format!(
++                    "{}{}{}{}",
++                    status_color,
++                    "▓".repeat(filled),
++                    "░".repeat(empty),
++                    RESET
++                );
++
++                (percentage, tokens, Some(progress_bar))
+             }
+             None => {
+                 // No usage data available
+-                ("-".to_string(), "-".to_string())
++                ("-".to_string(), "-".to_string(), None)
+             }
+         };
+ 
+         let mut metadata = HashMap::new();
+         match context_used_token_opt {
+             Some(context_used_token) => {
+-                let context_used_rate = (context_used_token as f64 / context_limit as f64) * 100.0;
++                let context_used_rate =
++                    (context_used_token as f64 / context_limit as f64) * 100.0;
+                 metadata.insert("tokens".to_string(), context_used_token.to_string());
+                 metadata.insert("percentage".to_string(), context_used_rate.to_string());
+             }
+@@ -71,8 +136,16 @@ impl Segment for ContextWindowSegment {
+         metadata.insert("limit".to_string(), context_limit.to_string());
+         metadata.insert("model".to_string(), input.model.id.clone());
+ 
++        let primary = match progress_bar {
++            Some(bar) if self.show_tokens => {
++                format!("{} {} · {} tokens", percentage_display, bar, tokens_display)
++            }
++            Some(bar) => format!("{} {}", percentage_display, bar),
++            None => format!("{} · {} tokens", percentage_display, tokens_display),
++        };
++
+         Some(SegmentData {
+-            primary: format!("{} · {} tokens", percentage_display, tokens_display),
++            primary,
+             secondary: String::new(),
+             metadata,
+         })
+diff --git a/src/core/segments/model.rs b/src/core/segments/model.rs
+index 7265fc5..eb13d1b 100644
+--- a/src/core/segments/model.rs
++++ b/src/core/segments/model.rs
+@@ -1,13 +1,30 @@
+ use super::{Segment, SegmentData};
+ use crate::config::{InputData, ModelConfig, SegmentId};
+ use std::collections::HashMap;
++use std::env;
++use std::fs;
++use std::io::{BufRead, BufReader};
++use std::path::Path;
++use std::time::SystemTime;
+ 
+-#[derive(Default)]
+-pub struct ModelSegment;
++pub struct ModelSegment {
++    show_effort: bool,
++}
++
++impl Default for ModelSegment {
++    fn default() -> Self {
++        Self::new()
++    }
++}
+ 
+ impl ModelSegment {
+     pub fn new() -> Self {
+-        Self
++        Self { show_effort: true }
++    }
++
++    pub fn with_show_effort(mut self, show: bool) -> Self {
++        self.show_effort = show;
++        self
+     }
+ }
+ 
+@@ -17,8 +34,18 @@ impl Segment for ModelSegment {
+         metadata.insert("model_id".to_string(), input.model.id.clone());
+         metadata.insert("display_name".to_string(), input.model.display_name.clone());
+ 
++        let model_name = self.format_model_name(&input.model.id, &input.model.display_name);
++
++        let primary = if self.show_effort {
++            let effort = resolve_effort_level(&input.transcript_path);
++            metadata.insert("effort".to_string(), effort.clone());
++            format!("{} · {}", model_name, effort)
++        } else {
++            model_name
++        };
++
+         Some(SegmentData {
+-            primary: self.format_model_name(&input.model.id, &input.model.display_name),
++            primary,
+             secondary: String::new(),
+             metadata,
+         })
+@@ -42,3 +69,201 @@ impl ModelSegment {
+         }
+     }
+ }
++
++/// Valid effort levels recognized by Claude Code.
++const VALID_EFFORTS: &[&str] = &["low", "medium", "high", "max", "auto"];
++
++/// Parse the last /effort command from the transcript JSONL file.
++/// Returns (effort_level, iso8601_timestamp).
++fn parse_effort_from_transcript<P: AsRef<Path>>(transcript_path: P) -> Option<(String, String)> {
++    let path = transcript_path.as_ref();
++    let file = fs::File::open(path).ok()?;
++    let reader = BufReader::new(file);
++    let lines: Vec<String> = reader
++        .lines()
++        .collect::<Result<Vec<_>, _>>()
++        .unwrap_or_default();
++
++    let mut last_effort: Option<(String, String)> = None;
++
++    for line in &lines {
++        let line = line.trim();
++        if line.is_empty() {
++            continue;
++        }
++
++        // Check for /effort command — must be a real user command entry, not tool results
++        if line.contains("<command-name>/effort</command-name>") {
++            if let Some((effort, ts)) = extract_effort_from_user_command(line) {
++                last_effort = Some((effort, ts));
++            }
++        }
++
++        // Check for queue-operation with /effort
++        if line.contains("\"queue-operation\"") && line.contains("/effort ") {
++            if let Some((effort, ts)) = extract_queue_effort(line) {
++                last_effort = Some((effort, ts));
++            }
++        }
++    }
++
++    last_effort
++}
++
++/// Resolve effort level by comparing transcript and settings.json timestamps.
++/// Whichever was modified more recently wins.
++/// Fallback: env var → default "auto".
++fn resolve_effort_level(transcript_path: &str) -> String {
++    let transcript_result = parse_effort_from_transcript(transcript_path);
++    let settings_result = read_effort_from_settings();
++
++    match (&transcript_result, &settings_result) {
++        (Some((t_effort, t_ts)), Some((s_effort, s_mtime))) => {
++            // Both exist — compare timestamps
++            if iso_ts_to_epoch(t_ts) > s_mtime.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0) {
++                t_effort.clone()
++            } else {
++                s_effort.clone()
++            }
++        }
++        (Some((t_effort, _)), None) => t_effort.clone(),
++        (None, Some((s_effort, _))) => s_effort.clone(),
++        (None, None) => {
++            // Env var fallback
++            if let Ok(val) = env::var("CLAUDE_CODE_EFFORT_LEVEL") {
++                let effort = val.trim().to_lowercase();
++                if VALID_EFFORTS.contains(&effort.as_str()) {
++                    return effort;
++                }
++            }
++            "auto".to_string()
++        }
++    }
++}
++
++/// Read effortLevel from ~/.claude/settings.json.
++/// Returns (effort_level, file_mtime).
++/// If effortLevel key is absent (meaning "auto"), returns ("auto", mtime).
++fn read_effort_from_settings() -> Option<(String, SystemTime)> {
++    let home = dirs::home_dir()?;
++    let settings_path = home.join(".claude").join("settings.json");
++    let mtime = fs::metadata(&settings_path).ok()?.modified().ok()?;
++    let content = fs::read_to_string(&settings_path).ok()?;
++    let settings: serde_json::Value = serde_json::from_str(&content).ok()?;
++
++    match settings.get("effortLevel").and_then(|v| v.as_str()) {
++        Some(effort) => {
++            let effort = effort.trim().to_lowercase();
++            if VALID_EFFORTS.contains(&effort.as_str()) {
++                Some((effort, mtime))
++            } else {
++                Some(("auto".to_string(), mtime))
++            }
++        }
++        // No effortLevel key means "auto", but still return mtime
++        // so we can compare with transcript
++        None => Some(("auto".to_string(), mtime)),
++    }
++}
++
++/// Convert ISO 8601 timestamp (e.g. "2026-03-16T04:52:11.745Z") to epoch milliseconds.
++fn iso_ts_to_epoch(ts: &str) -> u128 {
++    // Parse manually: YYYY-MM-DDThh:mm:ss.mmmZ
++    // Use chrono-free approach for simplicity
++    let ts = ts.trim().trim_end_matches('Z');
++    let parts: Vec<&str> = ts.splitn(2, 'T').collect();
++    if parts.len() != 2 {
++        return 0;
++    }
++    let date_parts: Vec<u64> = parts[0].split('-').filter_map(|s| s.parse().ok()).collect();
++    let time_str = parts[1];
++    let time_parts: Vec<&str> = time_str.splitn(2, '.').collect();
++    let hms: Vec<u64> = time_parts[0].split(':').filter_map(|s| s.parse().ok()).collect();
++    let millis: u64 = if time_parts.len() > 1 {
++        time_parts[1].parse().unwrap_or(0)
++    } else {
++        0
++    };
++
++    if date_parts.len() != 3 || hms.len() != 3 {
++        return 0;
++    }
++
++    let (year, month, day) = (date_parts[0], date_parts[1], date_parts[2]);
++    let (hour, min, sec) = (hms[0], hms[1], hms[2]);
++
++    // Days from epoch (1970-01-01) — simplified calculation
++    let mut days: u64 = 0;
++    for y in 1970..year {
++        days += if is_leap_year(y) { 366 } else { 365 };
++    }
++    let month_days = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
++    for m in 1..month {
++        days += month_days[m as usize];
++        if m == 2 && is_leap_year(year) {
++            days += 1;
++        }
++    }
++    days += day - 1;
++
++    let epoch_ms = ((days * 86400 + hour * 3600 + min * 60 + sec) * 1000 + millis) as u128;
++    epoch_ms
++}
++
++fn is_leap_year(y: u64) -> bool {
++    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
++}
++
++/// Extract effort level and timestamp from a user command entry.
++/// Returns (effort, timestamp).
++fn extract_effort_from_user_command(line: &str) -> Option<(String, String)> {
++    let entry: serde_json::Value = serde_json::from_str(line).ok()?;
++
++    // Must be a "user" type entry
++    if entry.get("type")?.as_str()? != "user" {
++        return None;
++    }
++
++    // message.content must be a string (direct user command), not an array (tool_result)
++    let content = entry.get("message")?.get("content")?.as_str()?;
++
++    // Must contain the /effort command tag
++    if !content.contains("<command-name>/effort</command-name>") {
++        return None;
++    }
++
++    // Extract args
++    let start_tag = "<command-args>";
++    let end_tag = "</command-args>";
++    let start = content.find(start_tag)? + start_tag.len();
++    let end = content[start..].find(end_tag)? + start;
++    let args = content[start..end].trim().to_lowercase();
++
++    if args.is_empty() {
++        return None;
++    }
++
++    // Validate it's a known effort level
++    if VALID_EFFORTS.contains(&args.as_str()) {
++        let ts = entry.get("timestamp").and_then(|v| v.as_str()).unwrap_or("").to_string();
++        Some((args, ts))
++    } else {
++        None
++    }
++}
++
++/// Extract effort level and timestamp from queue-operation content like "/effort auto".
++fn extract_queue_effort(line: &str) -> Option<(String, String)> {
++    let entry: serde_json::Value = serde_json::from_str(line).ok()?;
++    let content = entry.get("content")?.as_str()?;
++    let effort = content.strip_prefix("/effort ")?.trim().to_lowercase();
++    if effort.is_empty() {
++        return None;
++    }
++    if VALID_EFFORTS.contains(&effort.as_str()) {
++        let ts = entry.get("timestamp").and_then(|v| v.as_str()).unwrap_or("").to_string();
++        Some((effort, ts))
++    } else {
++        None
++    }
++}
+diff --git a/src/core/statusline.rs b/src/core/statusline.rs
+index 7633fa9..a51dad7 100644
+--- a/src/core/statusline.rs
++++ b/src/core/statusline.rs
+@@ -493,7 +493,12 @@ pub fn collect_all_segments(
+     for segment_config in &config.segments {
+         let segment_data = match segment_config.id {
+             crate::config::SegmentId::Model => {
+-                let segment = ModelSegment::new();
++                let show_effort = segment_config
++                    .options
++                    .get("show_effort")
++                    .and_then(|v| v.as_bool())
++                    .unwrap_or(true);
++                let segment = ModelSegment::new().with_show_effort(show_effort);
+                 segment.collect(input)
+             }
+             crate::config::SegmentId::Directory => {
+@@ -510,7 +515,29 @@ pub fn collect_all_segments(
+                 segment.collect(input)
+             }
+             crate::config::SegmentId::ContextWindow => {
+-                let segment = ContextWindowSegment::new();
++                let show_tokens = segment_config
++                    .options
++                    .get("show_tokens")
++                    .and_then(|v| v.as_bool())
++                    .unwrap_or(true);
++                let color_low = segment_config
++                    .options
++                    .get("color_low")
++                    .and_then(|v| v.as_u64())
++                    .map(|n| n as u8);
++                let color_mid = segment_config
++                    .options
++                    .get("color_mid")
++                    .and_then(|v| v.as_u64())
++                    .map(|n| n as u8);
++                let color_high = segment_config
++                    .options
++                    .get("color_high")
++                    .and_then(|v| v.as_u64())
++                    .map(|n| n as u8);
++                let segment = ContextWindowSegment::new()
++                    .with_show_tokens(show_tokens)
++                    .with_colors(color_low, color_mid, color_high);
+                 segment.collect(input)
+             }
+             crate::config::SegmentId::Usage => {

@@ -5,12 +5,63 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-#[derive(Default)]
-pub struct ContextWindowSegment;
+/// ANSI 重置代码
+const RESET: &str = "\x1b[0m";
+
+pub struct ContextWindowSegment {
+    show_tokens: bool,
+    color_low: String,
+    color_mid: String,
+    color_high: String,
+}
+
+impl Default for ContextWindowSegment {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ContextWindowSegment {
     pub fn new() -> Self {
-        Self
+        Self {
+            show_tokens: true,
+            color_low: "\x1b[38;5;114m".to_string(),
+            color_mid: "\x1b[38;5;179m".to_string(),
+            color_high: "\x1b[38;5;167m".to_string(),
+        }
+    }
+
+    pub fn with_show_tokens(mut self, show: bool) -> Self {
+        self.show_tokens = show;
+        self
+    }
+
+    pub fn with_colors(
+        mut self,
+        low: Option<u8>,
+        mid: Option<u8>,
+        high: Option<u8>,
+    ) -> Self {
+        if let Some(n) = low {
+            self.color_low = format!("\x1b[38;5;{}m", n);
+        }
+        if let Some(n) = mid {
+            self.color_mid = format!("\x1b[38;5;{}m", n);
+        }
+        if let Some(n) = high {
+            self.color_high = format!("\x1b[38;5;{}m", n);
+        }
+        self
+    }
+
+    fn get_status_color(&self, percentage: f64) -> &str {
+        if percentage <= 50.0 {
+            &self.color_low
+        } else if percentage <= 80.0 {
+            &self.color_mid
+        } else {
+            &self.color_high
+        }
     }
 
     /// Get context limit for the specified model
@@ -27,7 +78,7 @@ impl Segment for ContextWindowSegment {
 
         let context_used_token_opt = parse_transcript_usage(&input.transcript_path);
 
-        let (percentage_display, tokens_display) = match context_used_token_opt {
+        let (percentage_display, tokens_display, progress_bar) = match context_used_token_opt {
             Some(context_used_token) => {
                 let context_used_rate = (context_used_token as f64 / context_limit as f64) * 100.0;
 
@@ -48,18 +99,32 @@ impl Segment for ContextWindowSegment {
                     context_used_token.to_string()
                 };
 
-                (percentage, tokens)
+                let bar_length = 10;
+                let filled =
+                    ((context_used_rate / 100.0) * bar_length as f64).round() as usize;
+                let empty = bar_length - filled;
+                let status_color = self.get_status_color(context_used_rate);
+                let progress_bar = format!(
+                    "{}{}{}{}",
+                    status_color,
+                    "▓".repeat(filled),
+                    "░".repeat(empty),
+                    RESET
+                );
+
+                (percentage, tokens, Some(progress_bar))
             }
             None => {
                 // No usage data available
-                ("-".to_string(), "-".to_string())
+                ("-".to_string(), "-".to_string(), None)
             }
         };
 
         let mut metadata = HashMap::new();
         match context_used_token_opt {
             Some(context_used_token) => {
-                let context_used_rate = (context_used_token as f64 / context_limit as f64) * 100.0;
+                let context_used_rate =
+                    (context_used_token as f64 / context_limit as f64) * 100.0;
                 metadata.insert("tokens".to_string(), context_used_token.to_string());
                 metadata.insert("percentage".to_string(), context_used_rate.to_string());
             }
@@ -71,8 +136,16 @@ impl Segment for ContextWindowSegment {
         metadata.insert("limit".to_string(), context_limit.to_string());
         metadata.insert("model".to_string(), input.model.id.clone());
 
+        let primary = match progress_bar {
+            Some(bar) if self.show_tokens => {
+                format!("{} {} · {} tokens", percentage_display, bar, tokens_display)
+            }
+            Some(bar) => format!("{} {}", percentage_display, bar),
+            None => format!("{} · {} tokens", percentage_display, tokens_display),
+        };
+
         Some(SegmentData {
-            primary: format!("{} · {} tokens", percentage_display, tokens_display),
+            primary,
             secondary: String::new(),
             metadata,
         })

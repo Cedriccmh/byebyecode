@@ -131,10 +131,26 @@ impl Default for ModelConfig {
     fn default() -> Self {
         Self {
             model_entries: vec![
-                // 1M context models (put first for priority matching)
+                // 1M context models - specific patterns first (first-match-wins)
+                ModelEntry {
+                    pattern: "opus-4-6[1m]".to_string(),
+                    display_name: "Opus 4.6 1M".to_string(),
+                    context_limit: 1_000_000,
+                },
+                ModelEntry {
+                    pattern: "sonnet-4-6[1m]".to_string(),
+                    display_name: "Sonnet 4.6 1M".to_string(),
+                    context_limit: 1_000_000,
+                },
+                ModelEntry {
+                    pattern: "sonnet-4-5[1m]".to_string(),
+                    display_name: "Sonnet 4.5 1M".to_string(),
+                    context_limit: 1_000_000,
+                },
+                // Generic 1M fallback for unknown models
                 ModelEntry {
                     pattern: "[1m]".to_string(),
-                    display_name: "Sonnet 4.5 1M".to_string(),
+                    display_name: "1M Context".to_string(),
                     context_limit: 1_000_000,
                 },
                 // ModelEntry {

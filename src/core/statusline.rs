@@ -493,7 +493,12 @@ pub fn collect_all_segments(
     for segment_config in &config.segments {
         let segment_data = match segment_config.id {
             crate::config::SegmentId::Model => {
-                let segment = ModelSegment::new();
+                let show_effort = segment_config
+                    .options
+                    .get("show_effort")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let segment = ModelSegment::new().with_show_effort(show_effort);
                 segment.collect(input)
             }
             crate::config::SegmentId::Directory => {
@@ -510,7 +515,29 @@ pub fn collect_all_segments(
                 segment.collect(input)
             }
             crate::config::SegmentId::ContextWindow => {
-                let segment = ContextWindowSegment::new();
+                let show_tokens = segment_config
+                    .options
+                    .get("show_tokens")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let color_low = segment_config
+                    .options
+                    .get("color_low")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u8);
+                let color_mid = segment_config
+                    .options
+                    .get("color_mid")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u8);
+                let color_high = segment_config
+                    .options
+                    .get("color_high")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u8);
+                let segment = ContextWindowSegment::new()
+                    .with_show_tokens(show_tokens)
+                    .with_colors(color_low, color_mid, color_high);
                 segment.collect(input)
             }
             crate::config::SegmentId::Usage => {
